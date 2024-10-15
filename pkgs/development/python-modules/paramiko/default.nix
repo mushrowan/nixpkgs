@@ -15,7 +15,6 @@
   pytest-relaxed,
   six,
 }:
-
 buildPythonPackage rec {
   pname = "paramiko";
   version = "3.5.0";
@@ -40,6 +39,7 @@ buildPythonPackage rec {
     cryptography
     pyasn1
     six
+    pynacl
   ];
 
   optional-dependencies = {
@@ -51,17 +51,19 @@ buildPythonPackage rec {
       pynacl
       bcrypt
     ];
-    invoke = [ invoke ];
+    invoke = [invoke];
   };
 
-  nativeCheckInputs = [
-    icecream
-    mock
-    pytestCheckHook
-    pytest-relaxed
-  ] ++ lib.flatten (builtins.attrValues optional-dependencies);
+  nativeCheckInputs =
+    [
+      icecream
+      mock
+      pytestCheckHook
+      pytest-relaxed
+    ]
+    ++ lib.flatten (builtins.attrValues optional-dependencies);
 
-  pythonImportsCheck = [ "paramiko" ];
+  pythonImportsCheck = ["paramiko"];
 
   __darwinAllowLocalNetworking = true;
 

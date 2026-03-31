@@ -89,12 +89,29 @@ fn add_dependencies<P: AsRef<Path> + AsRef<OsStr> + std::fmt::Debug>(
     dlopen: &Option<DLOpenConfig>,
     queue: &mut NonRepeatingQueue<StorePath>,
 ) -> eyre::Result<()> {
-    if let Some(interp) = elf.interpreter {
+    // The interpreter directory (e.g. /nix/store/...-glibc/lib/) is used as a
+    // fallback library search path. glibc binaries typically lack RPATHs
+    // pointing to glibc's lib dir because the real dynamic linker resolves
+    // these implicitly. Without this fallback, dependencies like libc.so.6
+    // produce spurious warnings.
+    let interp_dir = if let Some(interp) = elf.interpreter {
         queue.push_back(StorePath {
             path: Box::from(Path::new(interp)),
             dlopen: dlopen.clone(),
         });
-    }
+        Path::new(interp).parent().map(|p| Box::<Path>::from(p))
+    } else {
+        None
+    };
+
+    // For shared libraries without an interpreter (e.g. libc.so.6 itself),
+    // the source file's own directory serves as a fallback. This handles
+    // the case where libc.so.6 lists ld-linux-x86-64.so.2 as a DT_NEEDED
+    // dependency and both reside in the same directory.
+    let source_path: &Path = source.as_ref();
+    let source_dir = source_path
+        .parent()
+        .map(|p| Box::<Path>::from(p));
 
     let mut dlopen_libraries = vec![];
     if let Some(dlopen) = dlopen {
@@ -133,11 +150,24 @@ fn add_dependencies<P: AsRef<Path> + AsRef<OsStr> + std::fmt::Debug>(
         vec![]
     };
 
-    let rpaths_as_path = rpaths
+    let mut rpaths_as_path: Vec<Box<Path>> = rpaths
         .into_iter()
         .flat_map(|p| p.split(":"))
         .map(|p| Box::<Path>::from(Path::new(p)))
-        .collect::<Vec<_>>();
+        .collect();
+
+    // Append fallback directories after explicit RPATHs so they are only
+    // consulted when the binary's own search paths come up empty.
+    if let Some(dir) = &interp_dir {
+        if !rpaths_as_path.iter().any(|p| p == dir) {
+            rpaths_as_path.push(dir.clone());
+        }
+    }
+    if let Some(dir) = &source_dir {
+        if !rpaths_as_path.iter().any(|p| p == dir) {
+            rpaths_as_path.push(dir.clone());
+        }
+    }
 
     for line in elf
         .libraries
@@ -159,8 +189,6 @@ fn add_dependencies<P: AsRef<Path> + AsRef<OsStr> + std::fmt::Debug>(
             }
         }
         if !found {
-            // glibc makes it tricky to make this an error because
-            // none of the files have a useful rpath.
             println!(
                 "Warning: Couldn't satisfy dependency {} for {:?}",
                 line,
